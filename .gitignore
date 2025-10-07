@@ -1,0 +1,15 @@
+/build/
+/cmake-build-*/
+wa-hub
+wa-sub
+*.o
+*.obj
+*.log
+*.tmp
+# runtime
+events*.jsonl
+meta.jsonl
+state.json
+send.fifo
+wa-hub.json
+aliases.json
