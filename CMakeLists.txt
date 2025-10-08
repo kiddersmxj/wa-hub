@@ -40,7 +40,7 @@ target_link_libraries(wa-runner PRIVATE CURL::libcurl nlohmann_json::nlohmann_js
 target_compile_definitions(wa-runner PRIVATE _FILE_OFFSET_BITS=64)
 
 # Install: binaries only
-install(TARGETS wa-hub wa-sub RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS wa-hub wa-sub wa-runner RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # Optional: install helper tool (OFF by default)
 option(INSTALL_TOOLS "Install tools/* helpers" OFF)
