@@ -13,3 +13,4 @@ state.json
 send.fifo
 wa-hub.json
 aliases.json
+commands.json
