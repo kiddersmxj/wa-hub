@@ -107,7 +107,16 @@ static Cfg load_cfg(int argc, char** argv){
   for(int i=1;i<argc;i++) if(std::string(argv[i])=="--config" && i+1<argc) { cfg_path=argv[i+1]; break; }
   if(cfg_path.empty()){ std::string envp=getenv_s("WA_HUB_CONFIG"); if(!envp.empty()) cfg_path=envp; }
   if(cfg_path.empty()) cfg_path = exe_dir() / "wa-hub.json";
-  if(fs::exists(cfg_path)){ std::ifstream f(cfg_path); try{ json j; f>>j; merge_json(c,j);}catch(...){} }
+
+  fs::path cfg_dir = cfg_path.empty() ? exe_dir() : fs::path(cfg_path).parent_path();
+
+  if(fs::exists(cfg_path)){
+    std::ifstream f(cfg_path);
+    try{ json j; f>>j; merge_json(c,j);}catch(...){}
+  }
+  // make aliases_path absolute if relative in config
+  if(!c.aliases_path.empty() && !c.aliases_path.is_absolute())
+    c.aliases_path = cfg_dir / c.aliases_path;
 
   // env overrides
   std::string v;
@@ -268,14 +277,12 @@ static long long catch_up_all_history(const Cfg& c, std::ofstream& global, PerCo
 
 // ---------- MAIN ----------
 int main(int argc,char**argv){
-  // load config
   Cfg cfg = load_cfg(argc, argv);
   if(cfg.worker.empty() || cfg.phone_id.empty()){
     std::cerr<<"Set worker and phone_id via config/env/CLI\n";
     return 1;
   }
 
-  // resolve paths
   fs::create_directories(cfg.base_dir);
   fs::create_directories(cfg.data_dir);
   fs::path fifo = cfg.fifo_path.empty()? (cfg.base_dir / cfg.fifo_name) : fs::path(cfg.fifo_path);
@@ -284,7 +291,6 @@ int main(int argc,char**argv){
 
   if(!fs::exists(fifo)){ std::string cmd="mkfifo "+fifo.string(); std::system(cmd.c_str()); }
 
-  // open FIFO with read end + keepalive writer so external writers never block
   int fd_r = ::open(fifo.c_str(), O_RDONLY | O_CLOEXEC);
   if(fd_r < 0){ std::perror("open fifo RDONLY"); return 2; }
   int fd_w_keepalive = ::open(fifo.c_str(), O_WRONLY | O_CLOEXEC);
@@ -301,7 +307,6 @@ int main(int argc,char**argv){
   std::atomic<long long> since{s0};
   std::atomic<bool> running{true};
 
-  // sender thread
   std::thread sender([&](){
     while(running){
       char* line=nullptr; size_t n=0; ssize_t r=getline(&line,&n,fifo_in);
@@ -323,7 +328,6 @@ int main(int argc,char**argv){
       long long ts = now_ms();
       std::string peer = peer_key(A, to);
 
-      // meta debug
       json jr = json::parse(resp, nullptr, false);
       json meta_line = {{"ts",ts},{"op","send"},{"http",code},{"to",to},{"text",text},{"phone_number_id",cfg.phone_id}};
       if(code/100==2){
@@ -349,7 +353,6 @@ int main(int argc,char**argv){
       }
       meta<<meta_line.dump()<<'\n'; meta.flush();
 
-      // normal logs
       if(code/100==2){
         json ev = { {"ts",ts},{"kind","sent"},{"peer",peer},{"text",text} };
         global<<ev.dump()<<'\n'; global.flush();
@@ -362,7 +365,6 @@ int main(int argc,char**argv){
     }
   });
 
-  // receiver loop
   while(running){
     long code=0;
     std::ostringstream url;

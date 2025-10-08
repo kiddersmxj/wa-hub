@@ -27,7 +27,7 @@ endif()
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # Binaries
-add_executable(wa-hub  src/wa_hub.cpp)
+add_executable(wa-hub  src/wa-hub.cpp)
 target_link_libraries(wa-hub PRIVATE CURL::libcurl nlohmann_json::nlohmann_json Threads::Threads)
 target_compile_definitions(wa-hub PRIVATE _FILE_OFFSET_BITS=64)
 

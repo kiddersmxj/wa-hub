@@ -1,11 +1,10 @@
-// wa-sub.cpp  v1.2
-// Tail/filter wa-hub JSONL logs. NAS-safe. No external deps except nlohmann-json.
-
+// wa-sub.cpp  v1.3 — NAS-safe tail, alias-aware peer resolution
 #include <nlohmann/json.hpp>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <chrono>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -19,7 +18,6 @@
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
-// ---------- time ----------
 static long long now_ms(){
   using namespace std::chrono;
   return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
@@ -29,6 +27,7 @@ static long long now_ms(){
 struct HubCfg {
   fs::path base_dir;
   fs::path data_dir;
+  fs::path aliases_path;        // NEW
   std::string per_prefix = "events.";
   std::string per_suffix = ".jsonl";
   std::string global_log = "events.jsonl";
@@ -38,11 +37,16 @@ static std::string getenv_s(const char* k){ const char* v=getenv(k); return v?st
 
 static HubCfg load_hub_cfg(const fs::path& p){
   HubCfg c;
-  fs::path home = getenv_s("HOME").empty()? "." : getenv_s("HOME");
+  fs::path home = getenv_s("HOME").empty()? "." : fs::path(getenv_s("HOME"));
   c.base_dir = home / ".wa-hub";
   c.data_dir.clear();
-  if(!p.empty()){
-    std::ifstream f(p);
+  c.aliases_path = c.base_dir / "aliases.json";
+
+  fs::path cfg_path = p;
+  fs::path cfg_dir  = cfg_path.empty()? fs::current_path() : cfg_path.parent_path();
+
+  if(!cfg_path.empty()){
+    std::ifstream f(cfg_path);
     if(f.good()){
       try{
         json j; f>>j;
@@ -51,10 +55,16 @@ static HubCfg load_hub_cfg(const fs::path& p){
         if(j.contains("per_prefix")) c.per_prefix = j["per_prefix"].get<std::string>();
         if(j.contains("per_suffix")) c.per_suffix = j["per_suffix"].get<std::string>();
         if(j.contains("global_log")) c.global_log = j["global_log"].get<std::string>();
+        if(j.contains("aliases_path")){
+          fs::path ap = j["aliases_path"].get<std::string>();
+          c.aliases_path = ap.is_absolute()? ap : (cfg_dir / ap);
+        }
       }catch(...){}
     }
   }
+
   if(c.data_dir.empty()) c.data_dir = c.base_dir;
+  if(!c.aliases_path.is_absolute()) c.aliases_path = cfg_dir / c.aliases_path;
   return c;
 }
 
@@ -73,7 +83,7 @@ struct Args{
 
 static void print_help(){
   std::cout <<
-R"(wa-sub v1.2 — tail and filter wa-hub JSONL logs
+R"(wa-sub v1.3 — tail and filter wa-hub JSONL logs
 
 USAGE
   wa-sub --file <path> | --peer <name|number> [--config <wa-hub.json>]
@@ -83,8 +93,10 @@ USAGE
 
 SOURCES
   --file PATH                    Read this JSONL file directly.
-  --peer NAME --config CFG       Resolve to per-peer file using CFG:
-                                   tail (data_dir)/(per_prefix + NAME + per_suffix)
+  --peer NAME|NUMBER --config CFG
+                                 Resolve to per-peer file using CFG:
+                                   tail (data_dir)/(per_prefix + KEY + per_suffix)
+                                 If NUMBER matches an alias in aliases_path, KEY is that alias.
 
 FILTERS
   --kind received|sent|status    Only those event kinds.
@@ -107,22 +119,7 @@ EXIT CODES
   0  success (match found or normal window/follow exit)
   1  --once timeout elapsed without a match
   2  bad usage or fatal error
-
-EXAMPLES
-  # Live stream of replies from 'max'
-  wa-sub --peer max --kind received --follow --config /home/kidders/apps/wa-hub/wa-hub.json
-
-  # Ask then wait up to 12s for next reply
-  hamzawa max "Status?"
-  wa-sub --peer max --kind received --once --timeout 12 --config /home/kidders/apps/wa-hub/wa-hub.json
-
-  # Batch: last 5 seconds of inbound as a single JSON array
-  wa-sub --file /home/kidders/nas/var/wa-hub/events.jsonl --kind received --window 5 --json-array
-
-  # Backfill from 1 minute ago and keep streaming
-  SINCE=$(( $(date +%s%3N) - 60000 ))
-  wa-sub --peer max --since-ts "$SINCE" --follow --config /home/kidders/apps/wa-hub/wa-hub.json
-)" ;
+)";
 }
 
 static void die_usage(const std::string& m){
@@ -133,11 +130,10 @@ static void die_usage(const std::string& m){
 
 static Args parse(int argc,char**argv){
   Args a;
-  // default config search
   std::string env_cfg = getenv_s("WA_HUB_CONFIG");
   if(!env_cfg.empty()) a.cfg = env_cfg;
   else {
-    fs::path home = getenv_s("HOME").empty()? "." : getenv_s("HOME");
+    fs::path home = getenv_s("HOME").empty()? "." : fs::path(getenv_s("HOME"));
     if(fs::exists(home/".wa-hub/wa-hub.json")) a.cfg = home/".wa-hub/wa-hub.json";
     else if(fs::exists(fs::current_path()/ "wa-hub.json")) a.cfg = fs::current_path()/ "wa-hub.json";
   }
@@ -208,6 +204,33 @@ static bool match_line(const std::string& raw, const Filter& f){
   return true;
 }
 
+// ---------- aliases ----------
+static std::string map_number_to_alias(const fs::path& aliases_path, const std::string& in){
+  std::ifstream f(aliases_path);
+  if(!f.good()) return in;
+  json j; try{ f>>j; }catch(...){ return in; }
+
+  auto scan = [&](const json& obj)->std::string{
+    for(auto it=obj.begin(); it!=obj.end(); ++it){
+      if(it.value().is_string()){
+        if(it.value().get<std::string>() == in) return it.key();
+      }
+    }
+    return std::string();
+  };
+
+  if(j.is_object()){
+    if(j.contains("aliases") && j["aliases"].is_object()){
+      auto alias = scan(j["aliases"]);
+      if(!alias.empty()) return alias;
+    }else{
+      auto alias = scan(j);
+      if(!alias.empty()) return alias;
+    }
+  }
+  return in;
+}
+
 // ---------- file utils ----------
 static uint64_t inode_of(const fs::path& p){ struct stat st{}; return (::stat(p.c_str(),&st)==0)? st.st_ino : 0; }
 static uint64_t size_of (const fs::path& p){ struct stat st{}; return (::stat(p.c_str(),&st)==0)? st.st_size: 0; }
@@ -216,7 +239,6 @@ int main(int argc,char**argv){
   Args a=parse(argc,argv);
   Filter filt=make_filter(a);
 
-  // resolve target path
   fs::path target;
   if(!a.file.empty()) target=a.file;
   else {
@@ -224,12 +246,12 @@ int main(int argc,char**argv){
     if(a.cfg.empty()){
       std::cerr<<"warning: --peer without explicit --config; using defaults\n";
     }
-    target = (c.data_dir / (c.per_prefix + a.peer + c.per_suffix));
+    std::string key = map_number_to_alias(c.aliases_path, a.peer);
+    target = (c.data_dir / (c.per_prefix + key + c.per_suffix));
   }
 
   if(a.debug) std::cerr<<"tailing: \""<<target.string()<<"\"\n";
 
-  // wait for file to exist in live modes
   while(!fs::exists(target)){
     if(!(a.follow||a.once||a.window_sec)) die_usage("file not found: "+target.string());
     usleep(200*1000);
@@ -238,9 +260,8 @@ int main(int argc,char**argv){
   uint64_t cur_inode = inode_of(target);
   uint64_t offset = 0;
 
-  // starting position
-  if(a.since_ts) offset = 0;           // need to scan history for since filter
-  else           offset = size_of(target); // start at EOF by default
+  if(a.since_ts) offset = 0;
+  else           offset = size_of(target);
 
   std::vector<std::string> outbuf;
   auto emit = [&](const std::string& line){
@@ -257,7 +278,6 @@ int main(int argc,char**argv){
       for(size_t i=0;i<outbuf.size();++i){
         if(i) std::cout<<",";
         std::cout<<outbuf[i];
-        if(!outbuf[i].empty() && outbuf[i].back()=='\n') {/* keep as-is */}
       }
       std::cout<<"]\n";
       std::cout.flush();
@@ -268,7 +288,6 @@ int main(int argc,char**argv){
   long long deadline_once = a.once ? (t0 + (*a.timeout_sec*1000LL)) : LLONG_MAX;
   long long deadline_win  = a.window_sec ? (t0 + (*a.window_sec*1000LL)) : LLONG_MAX;
 
-  // historical scan if since-ts
   if(a.since_ts){
     std::ifstream f(target);
     f.seekg(0, std::ios::beg);
@@ -283,23 +302,15 @@ int main(int argc,char**argv){
     if((long long)offset<0) offset = size_of(target);
   }
 
-  // main loop
   for(;;){
     if(a.once && now_ms()>=deadline_once){ flush_array(); return 1; }
     if(a.window_sec && now_ms()>=deadline_win){ flush_array(); return 0; }
 
-    if(!fs::exists(target)){
-      usleep(200*1000);
-      continue;
-    }
+    if(!fs::exists(target)){ usleep(200*1000); continue; }
     uint64_t ino = inode_of(target);
     uint64_t sz  = size_of(target);
 
-    if(ino != cur_inode || sz < offset){
-      // rotated or truncated
-      cur_inode = ino;
-      offset = 0;
-    }
+    if(ino != cur_inode || sz < offset){ cur_inode = ino; offset = 0; }
 
     if(sz > offset){
       std::ifstream f(target);
@@ -313,11 +324,8 @@ int main(int argc,char**argv){
           if(a.once){ flush_array(); return 0; }
         }
       }
-      // loop immediately to catch bursts
       continue;
     }
-
-    // idle
     usleep(200*1000);
   }
 }
