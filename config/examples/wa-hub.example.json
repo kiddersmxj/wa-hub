@@ -1,15 +1,28 @@
 {
-  "base_dir": "/CHANGE/ME/local",
-  "data_dir": "/CHANGE/ME/nas",
-  "aliases_path": "/CHANGE/ME/aliases.json",
-  "worker": "https://<your-worker>.workers.dev",
-  "phone_id": "000000000000000",
-  "lp_timeout_sec": 25,
-  "pull_limit": 200,
-  "fifo_name": "send.fifo",
-  "global_log": "events.jsonl",
-  "meta_log": "meta.jsonl",
+  "base_dir":  "~/.wa-hub/",
+  "data_dir":  "~/wa-hub-var/",
+
+  "global_dir":  "~/wa-hub-var/events/global",
+  "per_dir":     "~/wa-hub-var/events/peers",
+  "global_name": "events.jsonl",
+
+  "rotate_global_bytes": 52428800,
+  "rotate_peer_bytes":   52428800,
+  "archive_timefmt": "%Y%m%d-%H%M%S",
+
+  "meta_log":   "meta.jsonl",
   "state_file": "state.json",
   "per_prefix": "events.",
-  "per_suffix": ".jsonl"
+  "per_suffix": ".jsonl",
+
+  "fifo_name": "send.fifo",
+  "fifo_path": "~/.wa-hub/send.fifo",
+
+  "aliases_path": "~/apps/wa-hub/config/examples/aliases.example.json",
+
+  "worker":   "https://your-worker.example.workers.dev",
+  "phone_id": "123456789012345",   // placeholder
+
+  "lp_timeout_sec": 25,
+  "pull_limit": 200
 }

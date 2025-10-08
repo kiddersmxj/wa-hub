@@ -1,0 +1,22 @@
+[Unit]
+Description=WA Runner (commands bot) - example
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/apps/wa-hub/config/examples/wa-runner.example.env
+ExecStart=/bin/sh -lc '"$WA_RUNNER_BIN" \
+  --file "$WA_EVENTS_FILE" \
+  --config "$WA_HUB_CONFIG" \
+  --wa-sub "$WA_SUB_BIN" \
+  --commands "$WA_COMMANDS_JSON" \
+  --fifo "$WA_FIFO" \
+  --auto-reply --cmd-timeout "$WA_CMD_TIMEOUT" \
+  $WA_RUNNER_ARGS'
+Restart=always
+RestartSec=1
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

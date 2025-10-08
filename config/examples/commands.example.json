@@ -1,9 +1,12 @@
 {
   "global": {
+    "help":   ["/usr/bin/printf", "%s", "Commands: /help /echo /uptime /date"],
+    "echo":   ["/usr/bin/printf", "%s", "{args}"],
     "uptime": ["/usr/bin/uptime"],
-    "echo": ["/usr/bin/printf", "%s", "{args}"]
+    "date":   ["/usr/bin/date", "-Is=seconds"]
   },
-  "max": {
-    "tail": ["/usr/bin/tail", "-n", "20", "/var/log/syslog"]
+
+  "alice": {
+    "syslog": ["/usr/bin/tail", "-n", "50", "/var/log/syslog"]
   }
 }
