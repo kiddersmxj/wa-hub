@@ -2,7 +2,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CFG="${1:-/home/kidders/apps/wa-hub/wa-hub.json}"
+CFG="${1:-/home/kidders/apps/wa-hub/config/wa-hub.json}"
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required on the server" >&2
