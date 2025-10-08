@@ -14,3 +14,4 @@ send.fifo
 wa-hub.json
 aliases.json
 commands.json
+wa-runner.env
