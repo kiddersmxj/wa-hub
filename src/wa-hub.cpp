@@ -205,10 +205,14 @@ static long long load_since_state(const Cfg& c){
 }
 static void save_since_state(const Cfg& c,long long since){
   fs::path p = state_path(c);
+  std::error_code ec;
+  fs::create_directories(p.parent_path(), ec); // ensure parent exists
+
   fs::path tmp = p; tmp += ".tmp";
   json j={{"since",since},{"updated",now_ms()}};
   { std::ofstream o(tmp, std::ios::trunc); o<<j.dump(); o.flush(); }
-  std::error_code ec; fs::rename(tmp, p, ec); if(ec) std::cerr<<"state rename err: "<<ec.message()<<"\n";
+  fs::rename(tmp, p, ec);
+  if(ec) std::cerr<<"state rename err: "<<ec.message()<<"\n";
 }
 
 // ---------- Envelope processing ----------
