@@ -1,4 +1,4 @@
-// wa-sub.cpp  v1.3 — NAS-safe tail, alias-aware peer resolution
+// wa-sub.cpp  v1.4 — NAS-safe tail, alias-aware peer resolution, configurable dirs/names
 #include <nlohmann/json.hpp>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -27,22 +27,34 @@ static long long now_ms(){
 struct HubCfg {
   fs::path base_dir;
   fs::path data_dir;
-  fs::path aliases_path;        // NEW
+  fs::path aliases_path;
+
+  fs::path global_dir;
+  fs::path per_dir;
+  std::string global_name = "events.jsonl";
   std::string per_prefix = "events.";
   std::string per_suffix = ".jsonl";
-  std::string global_log = "events.jsonl";
+
+  // legacy
+  std::string legacy_global_log;
 };
 
 static std::string getenv_s(const char* k){ const char* v=getenv(k); return v?std::string(v):std::string(); }
 
-static HubCfg load_hub_cfg(const fs::path& p){
+static HubCfg load_hub_cfg(const fs::path& cfg_path_in){
   HubCfg c;
   fs::path home = getenv_s("HOME").empty()? "." : fs::path(getenv_s("HOME"));
   c.base_dir = home / ".wa-hub";
   c.data_dir.clear();
   c.aliases_path = c.base_dir / "aliases.json";
 
-  fs::path cfg_path = p;
+  fs::path cfg_path = cfg_path_in;
+  if(cfg_path.empty()){
+    std::string env_cfg = getenv_s("WA_HUB_CONFIG");
+    if(!env_cfg.empty()) cfg_path = env_cfg;
+    else if(fs::exists(home/".wa-hub/wa-hub.json")) cfg_path = home/".wa-hub/wa-hub.json";
+    else if(fs::exists(fs::current_path()/ "wa-hub.json")) cfg_path = fs::current_path()/ "wa-hub.json";
+  }
   fs::path cfg_dir  = cfg_path.empty()? fs::current_path() : cfg_path.parent_path();
 
   if(!cfg_path.empty()){
@@ -50,20 +62,43 @@ static HubCfg load_hub_cfg(const fs::path& p){
     if(f.good()){
       try{
         json j; f>>j;
-        if(j.contains("base_dir"))   c.base_dir   = j["base_dir"].get<std::string>();
-        if(j.contains("data_dir"))   c.data_dir   = j["data_dir"].get<std::string>();
-        if(j.contains("per_prefix")) c.per_prefix = j["per_prefix"].get<std::string>();
-        if(j.contains("per_suffix")) c.per_suffix = j["per_suffix"].get<std::string>();
-        if(j.contains("global_log")) c.global_log = j["global_log"].get<std::string>();
-        if(j.contains("aliases_path")){
-          fs::path ap = j["aliases_path"].get<std::string>();
-          c.aliases_path = ap.is_absolute()? ap : (cfg_dir / ap);
-        }
+        auto P=[&](const char* k, fs::path& v){
+          if(j.contains(k)){
+            fs::path tmp = j[k].get<std::string>();
+            v = tmp.is_absolute()? tmp : (cfg_dir / tmp);
+          }
+        };
+        auto S=[&](const char* k, std::string& v){ if(j.contains(k)) v=j[k].get<std::string>(); };
+
+        P("base_dir", c.base_dir);
+        P("data_dir", c.data_dir);
+        P("aliases_path", c.aliases_path);
+
+        P("global_dir", c.global_dir);
+        P("per_dir",    c.per_dir);
+        S("global_name", c.global_name);
+        S("per_prefix",  c.per_prefix);
+        S("per_suffix",  c.per_suffix);
+
+        S("global_log", c.legacy_global_log);
       }catch(...){}
     }
   }
 
   if(c.data_dir.empty()) c.data_dir = c.base_dir;
+  if(c.global_dir.empty()) c.global_dir = c.data_dir;
+  if(c.per_dir.empty())    c.per_dir    = c.data_dir;
+
+  if(!c.legacy_global_log.empty()){
+    fs::path gl = c.legacy_global_log;
+    if(gl.has_parent_path()){
+      c.global_dir = gl.parent_path();
+      c.global_name = gl.filename().string();
+    } else {
+      c.global_name = gl.string();
+    }
+  }
+
   if(!c.aliases_path.is_absolute()) c.aliases_path = cfg_dir / c.aliases_path;
   return c;
 }
@@ -83,7 +118,7 @@ struct Args{
 
 static void print_help(){
   std::cout <<
-R"(wa-sub v1.3 — tail and filter wa-hub JSONL logs
+R"(wa-sub v1.4 — tail and filter wa-hub JSONL logs
 
 USAGE
   wa-sub --file <path> | --peer <name|number> [--config <wa-hub.json>]
@@ -95,7 +130,7 @@ SOURCES
   --file PATH                    Read this JSONL file directly.
   --peer NAME|NUMBER --config CFG
                                  Resolve to per-peer file using CFG:
-                                   tail (data_dir)/(per_prefix + KEY + per_suffix)
+                                   tail (per_dir)/(per_prefix + KEY + per_suffix)
                                  If NUMBER matches an alias in aliases_path, KEY is that alias.
 
 FILTERS
@@ -130,14 +165,6 @@ static void die_usage(const std::string& m){
 
 static Args parse(int argc,char**argv){
   Args a;
-  std::string env_cfg = getenv_s("WA_HUB_CONFIG");
-  if(!env_cfg.empty()) a.cfg = env_cfg;
-  else {
-    fs::path home = getenv_s("HOME").empty()? "." : fs::path(getenv_s("HOME"));
-    if(fs::exists(home/".wa-hub/wa-hub.json")) a.cfg = home/".wa-hub/wa-hub.json";
-    else if(fs::exists(fs::current_path()/ "wa-hub.json")) a.cfg = fs::current_path()/ "wa-hub.json";
-  }
-
   for(int i=1;i<argc;i++){
     std::string s=argv[i];
     auto need=[&](const char* opt){ if(i+1>=argc) die_usage(std::string("missing value for ")+opt); };
@@ -163,9 +190,7 @@ static Args parse(int argc,char**argv){
   if(modes!=1) die_usage("choose exactly one mode: --follow OR --once --timeout S OR --window S");
 
   if(a.file.empty() && a.peer.empty()) die_usage("specify --file PATH or --peer NAME");
-
   if(a.once && !a.timeout_sec) die_usage("--once requires --timeout <sec>");
-
   if(a.kind && !(*a.kind=="received"||*a.kind=="sent"||*a.kind=="status"))
     die_usage("invalid --kind (use received|sent|status)");
 
@@ -240,18 +265,17 @@ int main(int argc,char**argv){
   Filter filt=make_filter(a);
 
   fs::path target;
-  if(!a.file.empty()) target=a.file;
-  else {
+  if(!a.file.empty()) {
+    target=a.file;
+  } else {
     HubCfg c=load_hub_cfg(a.cfg);
-    if(a.cfg.empty()){
-      std::cerr<<"warning: --peer without explicit --config; using defaults\n";
-    }
     std::string key = map_number_to_alias(c.aliases_path, a.peer);
-    target = (c.data_dir / (c.per_prefix + key + c.per_suffix));
+    target = (c.per_dir / (c.per_prefix + key + c.per_suffix));
   }
 
   if(a.debug) std::cerr<<"tailing: \""<<target.string()<<"\"\n";
 
+  // wait for file in live modes
   while(!fs::exists(target)){
     if(!(a.follow||a.once||a.window_sec)) die_usage("file not found: "+target.string());
     usleep(200*1000);
@@ -260,8 +284,9 @@ int main(int argc,char**argv){
   uint64_t cur_inode = inode_of(target);
   uint64_t offset = 0;
 
-  if(a.since_ts) offset = 0;
-  else           offset = size_of(target);
+  // starting position
+  if(a.since_ts) offset = 0;           // need to scan history
+  else           offset = size_of(target); // start at EOF by default
 
   std::vector<std::string> outbuf;
   auto emit = [&](const std::string& line){
@@ -288,6 +313,7 @@ int main(int argc,char**argv){
   long long deadline_once = a.once ? (t0 + (*a.timeout_sec*1000LL)) : LLONG_MAX;
   long long deadline_win  = a.window_sec ? (t0 + (*a.window_sec*1000LL)) : LLONG_MAX;
 
+  // historical scan if since-ts
   if(a.since_ts){
     std::ifstream f(target);
     f.seekg(0, std::ios::beg);
@@ -302,6 +328,7 @@ int main(int argc,char**argv){
     if((long long)offset<0) offset = size_of(target);
   }
 
+  // main loop
   for(;;){
     if(a.once && now_ms()>=deadline_once){ flush_array(); return 1; }
     if(a.window_sec && now_ms()>=deadline_win){ flush_array(); return 0; }
