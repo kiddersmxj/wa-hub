@@ -1,4 +1,3 @@
-# /home/kidders/apps/wa-hub/wa-fifo-append
 #!/usr/bin/env bash
 set -euo pipefail
 
